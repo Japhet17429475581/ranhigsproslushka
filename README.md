@@ -15,7 +15,15 @@ Python 3.11+, aiogram 3, **PostgreSQL 17+**, asyncpg, python-dotenv. Веб-па
 docker compose up -d --build
 ```
 
-Compose запускает PostgreSQL, ждёт готовности базы и запускает бот. `DATABASE_URL` внутри контейнера автоматически собирается из `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, с хостом `db`. Для внешнего PostgreSQL уберите это переопределение и зависимость от `db` в compose, задайте URL своего сервера.
+Compose запускает PostgreSQL, ждёт готовности базы и запускает бот. `DATABASE_URL` внутри контейнера автоматически собирается из `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, с хостом `db`.
+
+Если PostgreSQL уже есть, укажите готовую строку подключения в `DATABASE_URL` (сохраните параметры SSL от провайдера) и используйте отдельный файл:
+
+```sh
+docker compose -f docker-compose.external.yml up -d --build
+```
+
+В этом режиме нужны `BOT_TOKEN`, `ADMIN_ID`, `CHANNEL_ID`, `DATABASE_URL`. Переменные `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` не используются. Контейнер получает строку подключения без подмены и не запускает свою базу. Хост в строке должен быть доступен из контейнера; `localhost` внутри него означает сам контейнер. Для логов и перезапуска также добавляйте `-f docker-compose.external.yml` к командам ниже. Боту нужны права создавать таблицы в выбранной базе.
 
 База хранится в именованном томе `postgres_data` и переживает пересоздание контейнеров. `docker compose down` сохраняет том; `docker compose down -v` удаляет данные. Порт PostgreSQL наружу не открыт. При изменении пароля существующей базы нужно отдельно изменить пароль роли PostgreSQL: переменные инициализации действуют только для нового тома.
 
