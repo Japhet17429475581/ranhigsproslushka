@@ -1,11 +1,14 @@
 import asyncio
 import logging
+from collections.abc import Awaitable
 from contextlib import suppress
+from typing import TypeVar
 
 import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 from bot.config import Config, ConfigurationError
@@ -15,32 +18,93 @@ from bot.moderation import Moderator
 from bot.service import SubmissionService
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def safe_telegram_reason(error: TelegramAPIError) -> str:
+    # Match known descriptions but never include raw API errors/requests in logs:
+    # those can contain tokens, IDs or text supplied by a user.
+    description = error.message.casefold()
+    known_reasons = (
+        "chat not found",
+        "user not found",
+        "user_id_invalid",
+        "chat_id_invalid",
+        "bot was blocked by the user",
+        "bot can't initiate conversation with a user",
+        "bot is not a member",
+        "not enough rights",
+        "chat_admin_required",
+        "bot_command_invalid",
+        "bot_commands_too_much",
+        "bot_description_invalid",
+        "unauthorized",
+        "too many requests",
+    )
+    for reason in known_reasons:
+        if reason in description:
+            return f"{type(error).__name__}: {reason}"
+    return type(error).__name__
+
+
+async def startup_request(operation: Awaitable[T], stage: str, hint: str, *, required: bool = True) -> T | None:
+    try:
+        return await operation
+    except TelegramAPIError as error:
+        diagnosis = f"Telegram startup [{stage}]: {safe_telegram_reason(error)}. {hint}"
+        if required:
+            raise ConfigurationError(diagnosis) from None
+        logger.warning("%s Бот продолжает запуск.", diagnosis)
+        return None
 
 
 async def verify_telegram(bot: Bot, config: Config):
-    me = await bot.get_me()
-    chat = await bot.get_chat(config.channel_id)
+    me = await startup_request(bot.get_me(), "getMe", "Проверьте BOT_TOKEN в переменных хостинга.")
+    chat = await startup_request(
+        bot.get_chat(config.channel_id),
+        "getChat(channel)",
+        "Проверьте CHANNEL_ID: @username канала или числовой ID -100…; добавьте именно этого бота в канал администратором.",
+    )
     if chat.type != ChatType.CHANNEL:
         raise ConfigurationError("CHANNEL_ID должен указывать на канал")
-    membership = await bot.get_chat_member(chat.id, me.id)
+    membership = await startup_request(
+        bot.get_chat_member(chat.id, me.id),
+        "getChatMember(channel)",
+        "Добавьте именно этого бота администратором канала с правом публикации сообщений.",
+    )
     if membership.status != ChatMemberStatus.CREATOR and not (
         membership.status == ChatMemberStatus.ADMINISTRATOR and membership.can_post_messages
     ):
         raise ConfigurationError("Боту нужны права администратора канала с разрешением публикации")
-    await bot.send_message(config.admin_id, "Бот запущен. Очередь: /pending. Управление: /help_admin.")
+    await startup_request(
+        bot.send_message(config.admin_id, "Бот запущен. Очередь: /pending. Управление: /help_admin."),
+        "sendMessage(admin)",
+        "Проверьте ADMIN_ID: нужен числовой ID вашего личного аккаунта. Откройте этого бота и отправьте /start, снимите блокировку бота.",
+        required=False,
+    )
     public = [
         BotCommand(command="start", description="Отправить историю"),
         BotCommand(command="privacy", description="Как обрабатываются данные"),
     ]
-    await bot.set_my_commands(public, scope=BotCommandScopeDefault())
-    await bot.set_my_commands(
-        public
-        + [
-            BotCommand(command="pending", description="Очередь модерации"),
-            BotCommand(command="stats", description="Статистика"),
-            BotCommand(command="help_admin", description="Управление ботом"),
-        ],
-        scope=BotCommandScopeChat(chat_id=config.admin_id),
+    await startup_request(
+        bot.set_my_commands(public, scope=BotCommandScopeDefault()),
+        "setMyCommands(public)",
+        "Меню команд не обновилось; сами команды доступны вручную.",
+        required=False,
+    )
+    await startup_request(
+        bot.set_my_commands(
+            public
+            + [
+                BotCommand(command="pending", description="Очередь модерации"),
+                BotCommand(command="stats", description="Статистика"),
+                BotCommand(command="help_admin", description="Управление ботом"),
+            ],
+            scope=BotCommandScopeChat(chat_id=config.admin_id),
+        ),
+        "setMyCommands(admin)",
+        "Проверьте ADMIN_ID и отправьте /start этому боту. Административные команды доступны вручную.",
+        required=False,
     )
 
 
