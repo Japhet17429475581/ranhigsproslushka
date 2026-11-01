@@ -35,3 +35,5 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: docker build -t ranhigs-bot:test .
       - run: docker run --rm ranhigs-bot:test python -c "import main; import bot.application; import bot.__main__"
+      - name: Check imports with Bothost-style /app mount
+        run: docker run --rm --mount type=tmpfs,destination=/app ranhigs-bot:test python -c "import main; import bot.application; import bot.__main__; from pathlib import Path; assert Path(main.__file__).parent == Path('/usr/src/app')"
